@@ -15,6 +15,12 @@ BACK = "⬅️ Назад"
 CANCEL = "❌ Отмена"
 MENU = "🏠 В меню"
 
+ALLOWED_USER_IDS = {
+    int(v.strip())
+    for v in os.getenv("ALLOWED_USER_IDS", "").split(",")
+    if v.strip().isdigit()
+}
+
 
 class AddVideoStates(StatesGroup):
     wait_video = State()
