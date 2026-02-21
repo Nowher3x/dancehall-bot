@@ -11,7 +11,6 @@ CATEGORY_OPTIONS = [
     "Передвижения",
     "Easy",
     "Hard",
-    "Другое",
 ]
 
 
@@ -69,6 +68,7 @@ class Storage:
     def ensure_taxonomy(self) -> None:
         for name in CATEGORY_OPTIONS:
             self.conn.execute("INSERT OR IGNORE INTO categories(name) VALUES(?)", (name,))
+        self.conn.execute("DELETE FROM categories WHERE name = ?", ("Другое",))
         self.conn.commit()
 
     def find_video_by_file_uid(self, uid: str):

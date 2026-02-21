@@ -26,7 +26,6 @@ class AddVideoStates(StatesGroup):
     wait_video = State()
     wait_title = State()
     wait_categories = State()
-    wait_other_category = State()
     confirm = State()
 
 
@@ -280,11 +279,6 @@ async def add_categories(message: Message, state: FSMContext) -> None:
             await message.answer("Нужно выбрать хотя бы одну категорию.", reply_markup=category_choice_kb())
             return
 
-        if "Другое" in categories:
-            await state.set_state(AddVideoStates.wait_other_category)
-            await message.answer("Введите свой вариант для категории «Другое».", reply_markup=nav_kb())
-            return
-
         preview = f"Предпросмотр:\n🔥 {data['title']}\nКатегории: {', '.join(categories)}"
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="✅ Сохранить", callback_data="add:save")]]
@@ -319,37 +313,6 @@ async def add_categories(message: Message, state: FSMContext) -> None:
         return
 
     await message.answer("Используйте кнопки категорий и кнопку «Готово».", reply_markup=category_choice_kb())
-
-
-@dp.message(AddVideoStates.wait_other_category, F.text == BACK)
-async def add_other_back(message: Message, state: FSMContext) -> None:
-    await state.set_state(AddVideoStates.wait_categories)
-    data = await state.get_data()
-    await message.answer("Шаг назад. Выберите категории.", reply_markup=category_choice_kb(data.get("categories", [])))
-
-
-@dp.message(AddVideoStates.wait_other_category, F.text == CANCEL)
-async def add_other_cancel(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await message.answer("Добавление отменено.", reply_markup=main_menu_kb())
-
-
-@dp.message(AddVideoStates.wait_other_category)
-async def add_other_category(message: Message, state: FSMContext) -> None:
-    other_value = (message.text or "").strip()
-    if not other_value:
-        await message.answer("Поле «Другое» не может быть пустым.")
-        return
-    data = await state.get_data()
-    categories = [other_value if c == "Другое" else c for c in data["categories"]]
-    await state.update_data(categories=categories)
-    data = await state.get_data()
-    preview = f"Предпросмотр:\n🔥 {data['title']}\nКатегории: {', '.join(data['categories'])}"
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="✅ Сохранить", callback_data="add:save")]]
-    )
-    await state.set_state(AddVideoStates.confirm)
-    await message.answer(preview, reply_markup=kb)
 
 
 @dp.message(AddVideoStates.confirm, F.text == BACK)
@@ -466,8 +429,9 @@ async def send_results(message: Message, user_id: int, mode: str, filter_type: s
     lines = [f"Страница {page+1}/{total_pages}"]
     for r in rows:
         lines.append(f"• {r['title']} (id={r['id']})")
+    encoded_query = query.replace(":", "%3A")
     kb_rows = [[InlineKeyboardButton(text=r["title"], callback_data=f"video:open:{r['id']}")] for r in rows]
-    kb_rows.append(pagination_kb(f"list:{mode}:{filter_type}:{query}", page, total_pages).inline_keyboard[0])
+    kb_rows.append(pagination_kb(f"list:{mode}:{filter_type}:{encoded_query}", page, total_pages).inline_keyboard[0])
     await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 
@@ -512,7 +476,14 @@ async def delete_open(message: Message, state: FSMContext) -> None:
 
 @dp.callback_query(F.data.startswith("list:"))
 async def paginate(callback: CallbackQuery) -> None:
-    _, mode, filter_type, query, _, page = callback.data.split(":", 5)
+    parts = callback.data.split(":")
+    if len(parts) < 6 or parts[-2] != "page":
+        await callback.answer("Не удалось открыть страницу", show_alert=True)
+        return
+    mode = parts[1]
+    filter_type = parts[2]
+    query = ":".join(parts[3:-2]).replace("%3A", ":")
+    page = parts[-1]
     await callback.message.delete()
     await send_results(callback.message, callback.from_user.id, mode, filter_type, query, int(page))
     await callback.answer()
