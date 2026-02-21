@@ -1,7 +1,8 @@
 import re
 import sqlite3
 from math import ceil
-from typing import Iterable
+from typing import Iterable, Optional
+import os
 
 PAGE_SIZE = 10
 CATEGORY_OPTIONS = [
@@ -21,12 +22,11 @@ def normalize_url(url: str | None) -> str | None:
     u = re.sub(r"^https?://", "", u)
     return u.rstrip("/")
 
-
 class Storage:
-    def __init__(self, path: str = "dancehall.db") -> None:
+    def __init__(self, path: Optional[str] = None) -> None:
+        if path is None:
+            path = os.getenv("DB_PATH", "dancehall.db")
         self.conn = sqlite3.connect(path)
-        self.conn.row_factory = sqlite3.Row
-        self._init_db()
 
     def _init_db(self) -> None:
         cur = self.conn.cursor()
