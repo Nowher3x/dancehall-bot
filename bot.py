@@ -20,7 +20,7 @@ class AddVideoStates(StatesGroup):
     wait_video = State()
     wait_title = State()
     wait_categories = State()
-    wait_tags = State()
+    wait_other_category = State()
     confirm = State()
 
 
@@ -37,7 +37,9 @@ class DeleteStates(StatesGroup):
     wait_video = State()
 
 
-from storage import Storage, normalize_url
+from storage import CATEGORY_OPTIONS, Storage, normalize_url
+
+CATEGORY_OPTION_MAP = {str(index): name for index, name in enumerate(CATEGORY_OPTIONS, start=1)}
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
@@ -80,8 +82,7 @@ def pagination_kb(prefix: str, page: int, total_pages: int) -> InlineKeyboardMar
 
 def video_card_text(storage: Storage, row) -> str:
     categories = ", ".join(storage.video_categories(row["id"])) or "—"
-    tags = ", ".join(storage.video_tags(row["id"])) or "—"
-    return f"🔥 {row['title']}\nКатегории: {categories}\nТеги: {tags}"
+    return f"🔥 {row['title']}\nКатегории: {categories}"
 
 
 def video_actions_kb(video_id: int, is_favorite: bool) -> InlineKeyboardMarkup:
@@ -201,7 +202,12 @@ async def add_video_title(message: Message, state: FSMContext) -> None:
 
     await state.set_state(AddVideoStates.wait_categories)
     await message.answer(
-        "Введите категории через запятую (пример: Female, Groove).", reply_markup=nav_kb()
+        (
+            "Выберите категории (от 1 до 7) и отправьте номера через запятую.\n"
+            "1 — Вайны\n2 — Волны\n3 — Тряски\n4 — Передвижения\n"
+            "5 — Easy\n6 — Hard\n7 — Другое"
+        ),
+        reply_markup=nav_kb(),
     )
 
 
@@ -214,7 +220,14 @@ async def add_duplicate_choice(callback: CallbackQuery, state: FSMContext) -> No
         return
     await state.update_data(duplicate_choice=choice)
     await state.set_state(AddVideoStates.wait_categories)
-    await callback.message.answer("Введите категории через запятую.", reply_markup=nav_kb())
+    await callback.message.answer(
+        (
+            "Выберите категории (от 1 до 7) и отправьте номера через запятую.\n"
+            "1 — Вайны\n2 — Волны\n3 — Тряски\n4 — Передвижения\n"
+            "5 — Easy\n6 — Hard\n7 — Другое"
+        ),
+        reply_markup=nav_kb(),
+    )
     await callback.answer()
 
 
@@ -232,36 +245,57 @@ async def add_categories_cancel(message: Message, state: FSMContext) -> None:
 
 @dp.message(AddVideoStates.wait_categories)
 async def add_categories(message: Message, state: FSMContext) -> None:
-    categories = [c.strip() for c in (message.text or "").split(",") if c.strip()]
-    if not categories:
-        await message.answer("Нужно выбрать хотя бы одну категорию.")
+    selected_numbers = [c.strip() for c in (message.text or "").split(",") if c.strip()]
+    unique_numbers = list(dict.fromkeys(selected_numbers))
+    if not unique_numbers:
+        await message.answer("Нужно выбрать хотя бы одну категорию (номер от 1 до 7).")
+        return
+    if len(unique_numbers) > len(CATEGORY_OPTIONS):
+        await message.answer("Можно выбрать максимум 7 категорий.")
+        return
+    invalid = [n for n in unique_numbers if n not in CATEGORY_OPTION_MAP]
+    if invalid:
+        await message.answer("Некорректный выбор. Используйте только номера от 1 до 7.")
+        return
+    categories = [CATEGORY_OPTION_MAP[n] for n in unique_numbers]
+    await state.update_data(categories=categories)
+    if "7" in unique_numbers:
+        await state.set_state(AddVideoStates.wait_other_category)
+        await message.answer("Введите свой вариант для категории «Другое».", reply_markup=nav_kb())
         return
     await state.update_data(categories=categories)
-    await state.set_state(AddVideoStates.wait_tags)
-    await message.answer("Введите теги через запятую.", reply_markup=nav_kb())
+    data = await state.get_data()
+    preview = f"Предпросмотр:\n🔥 {data['title']}\nКатегории: {', '.join(data['categories'])}"
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="✅ Сохранить", callback_data="add:save")]]
+    )
+    await state.set_state(AddVideoStates.confirm)
+    await message.answer(preview, reply_markup=kb)
 
 
-@dp.message(AddVideoStates.wait_tags, F.text == BACK)
-async def add_tags_back(message: Message, state: FSMContext) -> None:
+@dp.message(AddVideoStates.wait_other_category, F.text == BACK)
+async def add_other_back(message: Message, state: FSMContext) -> None:
     await state.set_state(AddVideoStates.wait_categories)
-    await message.answer("Шаг назад. Введите категории.", reply_markup=nav_kb())
+    await message.answer("Шаг назад. Выберите категории (номера 1-7).", reply_markup=nav_kb())
 
 
-@dp.message(AddVideoStates.wait_tags, F.text == CANCEL)
-async def add_tags_cancel(message: Message, state: FSMContext) -> None:
+@dp.message(AddVideoStates.wait_other_category, F.text == CANCEL)
+async def add_other_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Добавление отменено.", reply_markup=main_menu_kb())
 
 
-@dp.message(AddVideoStates.wait_tags)
-async def add_tags(message: Message, state: FSMContext) -> None:
-    tags = [t.strip() for t in (message.text or "").split(",") if t.strip()]
-    if not tags:
-        await message.answer("Нужно выбрать хотя бы один тег.")
+@dp.message(AddVideoStates.wait_other_category)
+async def add_other_category(message: Message, state: FSMContext) -> None:
+    other_value = (message.text or "").strip()
+    if not other_value:
+        await message.answer("Поле «Другое» не может быть пустым.")
         return
-    await state.update_data(tags=tags)
     data = await state.get_data()
-    preview = f"Предпросмотр:\n🔥 {data['title']}\nКатегории: {', '.join(data['categories'])}\nТеги: {', '.join(tags)}"
+    categories = [other_value if c == "Другое" else c for c in data["categories"]]
+    await state.update_data(categories=categories)
+    data = await state.get_data()
+    preview = f"Предпросмотр:\n🔥 {data['title']}\nКатегории: {', '.join(data['categories'])}"
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="✅ Сохранить", callback_data="add:save")]]
     )
@@ -271,8 +305,8 @@ async def add_tags(message: Message, state: FSMContext) -> None:
 
 @dp.message(AddVideoStates.confirm, F.text == BACK)
 async def add_confirm_back(message: Message, state: FSMContext) -> None:
-    await state.set_state(AddVideoStates.wait_tags)
-    await message.answer("Шаг назад. Введите теги.", reply_markup=nav_kb())
+    await state.set_state(AddVideoStates.wait_categories)
+    await message.answer("Шаг назад. Выберите категории (номера 1-7).", reply_markup=nav_kb())
 
 
 @dp.message(AddVideoStates.confirm, F.text == CANCEL)
@@ -294,7 +328,6 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
             data.get("file_unique_id"),
             data.get("source_url"),
             data["categories"],
-            data["tags"],
         )
         row = storage.get_video(duplicate_video_id)
         await callback.message.answer("Видео заменено.")
@@ -305,7 +338,6 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
             data.get("file_unique_id"),
             data.get("source_url"),
             data["categories"],
-            data["tags"],
         )
         row = storage.get_video(vid)
         await callback.message.answer("Видео сохранено.")
@@ -321,7 +353,7 @@ async def search_start(message: Message, state: FSMContext) -> None:
     await state.set_state(SearchStates.choose_filter)
     kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🏷 По тегу"), KeyboardButton(text="📁 По категории")],
+            [KeyboardButton(text="📁 По категории")],
             [KeyboardButton(text="🔤 По названию")],
             [KeyboardButton(text=BACK), KeyboardButton(text=CANCEL), KeyboardButton(text=MENU)],
         ],
@@ -343,7 +375,7 @@ async def search_filter_cancel(message: Message, state: FSMContext) -> None:
 
 @dp.message(SearchStates.choose_filter)
 async def search_choose_filter(message: Message, state: FSMContext) -> None:
-    mapping = {"🏷 По тегу": "tag", "📁 По категории": "category", "🔤 По названию": "title"}
+    mapping = {"📁 По категории": "category", "🔤 По названию": "title"}
     if message.text not in mapping:
         await message.answer("Выберите вариант кнопкой.")
         return
@@ -481,7 +513,6 @@ async def video_edit(callback: CallbackQuery, state: FSMContext) -> None:
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Название", callback_data="edit:title")],
-            [InlineKeyboardButton(text="🏷 Теги", callback_data="edit:tags")],
             [InlineKeyboardButton(text="📁 Категории", callback_data="edit:categories")],
             [InlineKeyboardButton(text="🎬 Видео", callback_data="edit:video")],
             [InlineKeyboardButton(text="🗑 Удалить", callback_data="edit:delete")],
