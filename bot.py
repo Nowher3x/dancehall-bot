@@ -299,14 +299,8 @@ async def add_categories(message: Message, state: FSMContext) -> None:
         await state.set_state(AddVideoStates.wait_other_category)
         await message.answer("Введите свой вариант для категории «Другое».", reply_markup=nav_kb())
         return
-    await state.update_data(categories=categories)
-    data = await state.get_data()
-    preview = f"Предпросмотр:\n🔥 {data['title']}\nКатегории: {', '.join(data['categories'])}"
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="✅ Сохранить", callback_data="add:save")]]
-    )
-    await state.set_state(AddVideoStates.confirm)
-    await message.answer(preview, reply_markup=kb)
+
+    await message.answer("Используйте кнопки категорий и кнопку «✅ Готово».", reply_markup=category_choice_kb())
 
 
 @dp.message(AddVideoStates.wait_other_category, F.text == BACK)
