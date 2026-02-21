@@ -4,6 +4,7 @@ import os
 import re
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -14,13 +15,6 @@ from dotenv import load_dotenv
 BACK = "⬅️ Назад"
 CANCEL = "❌ Отмена"
 MENU = "🏠 В меню"
-
-ALLOWED_USER_IDS = {
-    int(v.strip())
-    for v in os.getenv("ALLOWED_USER_IDS", "").split(",")
-    if v.strip().isdigit()
-}
-
 
 class AddVideoStates(StatesGroup):
     wait_video = State()
@@ -132,9 +126,31 @@ def video_actions_kb(video_id: int, is_favorite: bool) -> InlineKeyboardMarkup:
 
 
 load_dotenv()
+STORAGE_CHAT_ID = int(os.getenv("STORAGE_CHAT_ID", "0"))
+ALLOWED_USER_IDS = {
+    int(v.strip())
+    for v in os.getenv("ALLOWED_USER_IDS", "").split(",")
+    if v.strip().isdigit()
+}
+if os.getenv("ALLOWED_USER_ID", "").strip().isdigit():
+    ALLOWED_USER_IDS.add(int(os.getenv("ALLOWED_USER_ID")))
+
 storage = Storage()
 storage.ensure_taxonomy()
 dp = Dispatcher(storage=MemoryStorage())
+
+
+async def ensure_user_allowed(message: Message, state: FSMContext | None = None) -> bool:
+    if not ALLOWED_USER_IDS:
+        return True
+    user_id = message.from_user.id if message.from_user else None
+    if user_id in ALLOWED_USER_IDS:
+        return True
+    if state:
+        await state.clear()
+    await message.answer("⛔️ Доступ запрещён. Ваш user_id не добавлен в ALLOWED_USER_ID(S).")
+    logging.warning("Unauthorized access attempt from user_id=%s", user_id)
+    return False
 
 
 async def go_menu(message: Message, state: FSMContext) -> None:
@@ -144,16 +160,22 @@ async def go_menu(message: Message, state: FSMContext) -> None:
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     await go_menu(message, state)
 
 
 @dp.message(F.text == MENU)
 async def menu_btn(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     await go_menu(message, state)
 
 
 @dp.message(F.text == "➕ Добавить видео")
 async def add_video_start(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     await state.set_state(AddVideoStates.wait_video)
     await message.answer("Пришлите видеофайл Telegram или URL.", reply_markup=nav_kb())
 
@@ -171,6 +193,8 @@ async def add_video_cancel_video(message: Message, state: FSMContext) -> None:
 
 @dp.message(AddVideoStates.wait_video)
 async def add_video_video(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     file_id = file_unique_id = source_url = None
     if message.video:
         file_id = message.video.file_id
@@ -193,7 +217,13 @@ async def add_video_video(message: Message, state: FSMContext) -> None:
         await message.answer("Нужно отправить видеофайл или URL. Попробуйте снова.")
         return
 
-    await state.update_data(file_id=file_id, file_unique_id=file_unique_id, source_url=source_url)
+    await state.update_data(
+        file_id=file_id,
+        file_unique_id=file_unique_id,
+        source_url=source_url,
+        source_chat_id=message.chat.id,
+        source_message_id=message.message_id,
+    )
     await state.set_state(AddVideoStates.wait_title)
     await message.answer("Введите название видео.", reply_markup=nav_kb())
 
@@ -345,15 +375,36 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
         row = storage.get_video(duplicate_video_id)
         await callback.message.answer("Видео заменено.")
     else:
-        vid = storage.create_video(
-            data["title"],
-            data.get("file_id"),
-            data.get("file_unique_id"),
-            data.get("source_url"),
-            data["categories"],
-        )
+        if data.get("file_unique_id"):
+            vid = storage.upsert_video_file(
+                data["title"],
+                data.get("file_id"),
+                data.get("file_unique_id"),
+                data.get("source_url"),
+            )
+            storage._set_categories(vid, data["categories"])
+            storage.conn.commit()
+        else:
+            vid = storage.create_video(
+                data["title"],
+                data.get("file_id"),
+                data.get("file_unique_id"),
+                data.get("source_url"),
+                data["categories"],
+            )
         row = storage.get_video(vid)
         await callback.message.answer("Видео сохранено.")
+
+    if data.get("file_unique_id") and STORAGE_CHAT_ID:
+        try:
+            copied = await callback.bot.copy_message(
+                chat_id=STORAGE_CHAT_ID,
+                from_chat_id=data.get("source_chat_id", callback.message.chat.id),
+                message_id=data.get("source_message_id", callback.message.message_id),
+            )
+            storage.save_storage_message(row["id"], STORAGE_CHAT_ID, copied.message_id)
+        except Exception as exc:
+            logging.exception("Failed to copy video to storage chat: %s", exc)
 
     await state.clear()
     await send_video_card(callback.message, row, callback.from_user.id)
@@ -363,6 +414,8 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
 
 @dp.message(F.text == "🔎 Поиск")
 async def search_start(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     await state.set_state(SearchStates.choose_filter)
     kb = ReplyKeyboardMarkup(
         keyboard=[
@@ -456,12 +509,16 @@ async def search_query(message: Message, state: FSMContext) -> None:
 
 @dp.message(F.text == "⭐ Избранное")
 async def favorites_open(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     await state.clear()
     await send_results(message, message.from_user.id, "favorites", "favorite", "my", 0)
 
 
 @dp.message(F.text == "✏️ Редактировать")
 async def edit_open(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     await state.set_state(EditStates.wait_video)
     await send_results(message, message.from_user.id, "all", "all", "all", 0)
     await message.answer("Выберите видео для редактирования.", reply_markup=nav_kb())
@@ -469,6 +526,8 @@ async def edit_open(message: Message, state: FSMContext) -> None:
 
 @dp.message(F.text == "🗑 Удалить")
 async def delete_open(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
     await state.set_state(DeleteStates.wait_video)
     await send_results(message, message.from_user.id, "all", "all", "all", 0)
     await message.answer("Выберите видео для удаления.", reply_markup=nav_kb())
@@ -532,7 +591,18 @@ async def video_download(callback: CallbackQuery) -> None:
         await callback.answer("Видео не найдено", show_alert=True)
         return
     if row["file_id"]:
-        await callback.message.answer_video(row["file_id"], caption=row["title"])
+        try:
+            await callback.message.answer_video(row["file_id"], caption=row["title"])
+        except TelegramBadRequest as exc:
+            text = str(exc).lower()
+            if "wrong file identifier" in text or "file_id" in text or "invalid" in text:
+                storage.mark_needs_refresh(vid)
+                logging.warning("Invalid file_id for video_id=%s: %s", vid, exc)
+                await callback.message.answer(
+                    "⚠️ Видео временно недоступно: Telegram обновил file_id. Нужна переиндексация из vault-канала."
+                )
+            else:
+                raise
     elif row["source_url"]:
         await callback.message.answer(f"Ссылка: {row['source_url']}")
     else:
@@ -630,6 +700,19 @@ async def delete_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.answer("Удаление отменено.", reply_markup=main_menu_kb())
     await callback.answer()
+
+
+@dp.channel_post(F.video)
+async def vault_channel_post(message: Message) -> None:
+    if not STORAGE_CHAT_ID or message.chat.id != STORAGE_CHAT_ID or not message.video:
+        return
+    updated = storage.refresh_file_id_from_storage(
+        message.message_id,
+        message.video.file_id,
+        message.video.file_unique_id,
+    )
+    if updated:
+        logging.info("Storage refresh applied for storage_message_id=%s", message.message_id)
 
 
 async def main() -> None:
