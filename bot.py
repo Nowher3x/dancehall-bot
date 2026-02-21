@@ -266,46 +266,38 @@ async def add_categories_cancel(message: Message, state: FSMContext) -> None:
 @dp.message(AddVideoStates.wait_categories)
 async def add_categories(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
-
-    if text == "✅ Готово":
-        data = await state.get_data()
-        categories = data.get("categories", [])
-        if not categories:
-            await message.answer("Нужно выбрать хотя бы одну категорию.", reply_markup=category_choice_kb())
-            return
-
-        await state.update_data(categories=categories)
-        if "Другое" in categories:
-            await state.set_state(AddVideoStates.wait_other_category)
-            await message.answer("Введите свой вариант для категории «Другое».", reply_markup=nav_kb())
-            return
-
-        preview = f"Предпросмотр:\n🔥 {data['title']}\nКатегории: {', '.join(categories)}"
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="✅ Сохранить", callback_data="add:save")]]
-        )
-        await state.set_state(AddVideoStates.confirm)
-        await message.answer(preview, reply_markup=kb)
-        return
-
     if text.startswith("✅ ") or text.startswith("▫️ "):
         category = text[2:].strip()
         if category not in CATEGORY_OPTIONS:
             await message.answer("Выберите категорию кнопкой из списка.")
             return
-
         data = await state.get_data()
         current = data.get("categories", [])
         if category in current:
             current = [c for c in current if c != category]
         else:
             current.append(category)
-
         await state.update_data(categories=current)
         await message.answer(
             f"Выбрано: {', '.join(current) if current else 'ничего'}",
             reply_markup=category_choice_kb(current),
         )
+        return
+
+    if text != "✅ Готово":
+        await message.answer("Используйте кнопки категорий и кнопку «✅ Готово».", reply_markup=category_choice_kb())
+        return
+
+    data = await state.get_data()
+    categories = data.get("categories", [])
+    if not categories:
+        await message.answer("Нужно выбрать хотя бы одну категорию.", reply_markup=category_choice_kb())
+        return
+
+    await state.update_data(categories=categories)
+    if "Другое" in categories:
+        await state.set_state(AddVideoStates.wait_other_category)
+        await message.answer("Введите свой вариант для категории «Другое».", reply_markup=nav_kb())
         return
 
     await message.answer("Используйте кнопки категорий и кнопку «✅ Готово».", reply_markup=category_choice_kb())
