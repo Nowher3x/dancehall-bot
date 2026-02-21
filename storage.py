@@ -27,6 +27,8 @@ class Storage:
         if path is None:
             path = os.getenv("DB_PATH", "dancehall.db")
         self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        self._init_db()
 
     def _init_db(self) -> None:
         cur = self.conn.cursor()
