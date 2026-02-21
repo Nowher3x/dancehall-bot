@@ -64,6 +64,20 @@ class Storage:
             """
         )
         self.conn.commit()
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(videos)").fetchall()
+        }
+        if "storage_chat_id" not in columns:
+            self.conn.execute("ALTER TABLE videos ADD COLUMN storage_chat_id INTEGER")
+        if "storage_message_id" not in columns:
+            self.conn.execute("ALTER TABLE videos ADD COLUMN storage_message_id INTEGER")
+        if "needs_refresh" not in columns:
+            self.conn.execute("ALTER TABLE videos ADD COLUMN needs_refresh INTEGER NOT NULL DEFAULT 0")
+        self.conn.commit()
 
     def ensure_taxonomy(self) -> None:
         for name in CATEGORY_OPTIONS:
@@ -73,6 +87,11 @@ class Storage:
 
     def find_video_by_file_uid(self, uid: str):
         return self.conn.execute("SELECT * FROM videos WHERE file_unique_id = ?", (uid,)).fetchone()
+
+    def find_video_by_storage_message(self, storage_message_id: int):
+        return self.conn.execute(
+            "SELECT * FROM videos WHERE storage_message_id = ?", (storage_message_id,)
+        ).fetchone()
 
     def find_video_by_url(self, normalized_url: str):
         return self.conn.execute(
@@ -108,6 +127,65 @@ class Storage:
             (title.strip(), file_id, file_unique_id, source_url, normalized_url, video_id),
         )
         self._set_categories(video_id, categories)
+        self.conn.commit()
+
+    def upsert_video_file(self, title, file_id, file_unique_id, source_url):
+        normalized_url = normalize_url(source_url) if source_url else None
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO videos(title, file_id, file_unique_id, source_url, source_url_normalized, needs_refresh)
+            VALUES (?, ?, ?, ?, ?, 0)
+            ON CONFLICT(file_unique_id) DO UPDATE SET
+                title = excluded.title,
+                file_id = excluded.file_id,
+                source_url = excluded.source_url,
+                source_url_normalized = excluded.source_url_normalized,
+                needs_refresh = 0
+            """,
+            (title.strip(), file_id, file_unique_id, source_url, normalized_url),
+        )
+        row = self.find_video_by_file_uid(file_unique_id)
+        self.conn.commit()
+        return row["id"]
+
+    def save_storage_message(self, video_id: int, storage_chat_id: int, storage_message_id: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE videos
+               SET storage_chat_id = ?, storage_message_id = ?
+             WHERE id = ?
+            """,
+            (storage_chat_id, storage_message_id, video_id),
+        )
+        self.conn.commit()
+
+    def refresh_file_id_from_storage(self, storage_message_id: int, file_id: str, file_unique_id: str) -> int | None:
+        updated = self.conn.execute(
+            """
+            UPDATE videos
+               SET file_id = ?, file_unique_id = ?, needs_refresh = 0
+             WHERE storage_message_id = ?
+            """,
+            (file_id, file_unique_id, storage_message_id),
+        )
+        if updated.rowcount:
+            self.conn.commit()
+            return updated.rowcount
+
+        fallback = self.conn.execute(
+            """
+            UPDATE videos
+               SET file_id = ?, needs_refresh = 0
+             WHERE file_unique_id = ?
+            """,
+            (file_id, file_unique_id),
+        )
+        self.conn.commit()
+        return fallback.rowcount if fallback.rowcount else None
+
+    def mark_needs_refresh(self, video_id: int) -> None:
+        self.conn.execute("UPDATE videos SET needs_refresh = 1 WHERE id = ?", (video_id,))
         self.conn.commit()
 
     def _set_categories(self, video_id: int, categories: Iterable[str]) -> None:
