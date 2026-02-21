@@ -153,6 +153,17 @@ async def ensure_user_allowed(message: Message, state: FSMContext | None = None)
     return False
 
 
+async def copy_video_to_vault(bot: Bot, from_chat_id: int, message_id: int) -> tuple[int, int] | None:
+    if not STORAGE_CHAT_ID:
+        return None
+    copied = await bot.copy_message(
+        chat_id=STORAGE_CHAT_ID,
+        from_chat_id=from_chat_id,
+        message_id=message_id,
+    )
+    return STORAGE_CHAT_ID, copied.message_id
+
+
 async def go_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Главное меню", reply_markup=main_menu_kb())
@@ -196,12 +207,25 @@ async def add_video_video(message: Message, state: FSMContext) -> None:
     if not await ensure_user_allowed(message, state):
         return
     file_id = file_unique_id = source_url = None
+    storage_chat_id = storage_message_id = None
     if message.video:
         file_id = message.video.file_id
         file_unique_id = message.video.file_unique_id
+
+        if STORAGE_CHAT_ID:
+            try:
+                copied_meta = await copy_video_to_vault(message.bot, message.chat.id, message.message_id)
+                if copied_meta:
+                    storage_chat_id, storage_message_id = copied_meta
+            except Exception as exc:
+                logging.exception("Failed to copy source video to storage chat: %s", exc)
+                await message.answer("⚠️ Не удалось скопировать видео в vault-канал. Проверьте права бота в канале.")
+
         existing = storage.find_video_by_file_uid(file_unique_id)
         if existing:
-            await message.answer("Такое видео уже есть, дубликат не создан.")
+            if storage_chat_id and storage_message_id:
+                storage.save_storage_message(existing["id"], storage_chat_id, storage_message_id)
+            await message.answer("Такое видео уже есть, запись обновлена в vault.")
             await send_video_card(message, existing, message.from_user.id)
             await go_menu(message, state)
             return
@@ -223,6 +247,8 @@ async def add_video_video(message: Message, state: FSMContext) -> None:
         source_url=source_url,
         source_chat_id=message.chat.id,
         source_message_id=message.message_id,
+        storage_chat_id=storage_chat_id,
+        storage_message_id=storage_message_id,
     )
     await state.set_state(AddVideoStates.wait_title)
     await message.answer("Введите название видео.", reply_markup=nav_kb())
@@ -395,16 +421,8 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
         row = storage.get_video(vid)
         await callback.message.answer("Видео сохранено.")
 
-    if data.get("file_unique_id") and STORAGE_CHAT_ID:
-        try:
-            copied = await callback.bot.copy_message(
-                chat_id=STORAGE_CHAT_ID,
-                from_chat_id=data.get("source_chat_id", callback.message.chat.id),
-                message_id=data.get("source_message_id", callback.message.message_id),
-            )
-            storage.save_storage_message(row["id"], STORAGE_CHAT_ID, copied.message_id)
-        except Exception as exc:
-            logging.exception("Failed to copy video to storage chat: %s", exc)
+    if data.get("file_unique_id") and data.get("storage_chat_id") and data.get("storage_message_id"):
+        storage.save_storage_message(row["id"], data["storage_chat_id"], data["storage_message_id"])
 
     await state.clear()
     await send_video_card(callback.message, row, callback.from_user.id)
