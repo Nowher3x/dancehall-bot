@@ -5,11 +5,13 @@ from typing import Iterable, Optional
 import os
 
 PAGE_SIZE = 10
+TITLE_LIST_PAGE_SIZE = 15
 CATEGORY_OPTIONS = [
     "Вайны",
     "Волны",
     "Тряски",
     "Передвижения",
+    "Прыжки",
     "Easy",
     "Hard",
 ]
@@ -288,6 +290,15 @@ class Storage:
             "SELECT * FROM videos ORDER BY id DESC LIMIT ? OFFSET ?", (PAGE_SIZE, offset)
         ).fetchall()
         return rows, ceil(total / PAGE_SIZE) if total else 0
+
+    def list_titles(self, page: int):
+        offset = page * TITLE_LIST_PAGE_SIZE
+        total = self.conn.execute("SELECT COUNT(*) AS cnt FROM videos").fetchone()["cnt"]
+        rows = self.conn.execute(
+            "SELECT id, title FROM videos ORDER BY id DESC LIMIT ? OFFSET ?",
+            (TITLE_LIST_PAGE_SIZE, offset),
+        ).fetchall()
+        return rows, ceil(total / TITLE_LIST_PAGE_SIZE) if total else 0
 
     def update_title(self, video_id: int, title: str) -> None:
         self.conn.execute("UPDATE videos SET title = ? WHERE id = ?", (title.strip(), video_id))

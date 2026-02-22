@@ -75,7 +75,7 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="➕ Добавить видео"), KeyboardButton(text="🔎 Поиск")],
             [KeyboardButton(text="⭐ Избранное"), KeyboardButton(text="✏️ Редактировать")],
-            [KeyboardButton(text="🗑 Удалить")],
+            [KeyboardButton(text="📋 Список"), KeyboardButton(text="🗑 Удалить")],
         ],
         resize_keyboard=True,
     )
@@ -491,6 +491,8 @@ async def send_results(message: Message, user_id: int, mode: str, filter_type: s
         rows, total_pages = storage.favorites(user_id, page)
     elif mode == "all":
         rows, total_pages = storage.list_all_videos(page)
+    elif mode == "titles":
+        rows, total_pages = storage.list_titles(page)
     else:
         rows, total_pages = storage.search(filter_type, query, page)
 
@@ -499,9 +501,14 @@ async def send_results(message: Message, user_id: int, mode: str, filter_type: s
         return
     lines = [f"Страница {page+1}/{total_pages}"]
     for r in rows:
-        lines.append(f"• {r['title']} (id={r['id']})")
+        if mode == "titles":
+            lines.append(f"• {r['title']}")
+        else:
+            lines.append(f"• {r['title']} (id={r['id']})")
     encoded_query = query.replace(":", "%3A")
-    kb_rows = [[InlineKeyboardButton(text=r["title"], callback_data=f"video:open:{r['id']}")] for r in rows]
+    kb_rows = []
+    if mode != "titles":
+        kb_rows.extend([[InlineKeyboardButton(text=r["title"], callback_data=f"video:open:{r['id']}")] for r in rows])
     kb_rows.append(pagination_kb(f"list:{mode}:{filter_type}:{encoded_query}", page, total_pages).inline_keyboard[0])
     await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
@@ -520,9 +527,20 @@ async def search_query(message: Message, state: FSMContext) -> None:
         await message.answer("Пустой запрос недопустим.")
         return
 
-    await state.clear()
     await send_results(message, message.from_user.id, "search", data["filter_type"], query, 0)
+    if data["filter_type"] == "category":
+        await message.answer("Выберите другую категорию или вернитесь в меню.", reply_markup=search_category_kb())
+        return
+    await state.clear()
     await message.answer("Выберите видео или вернитесь в меню.", reply_markup=main_menu_kb())
+
+
+@dp.message(F.text == "📋 Список")
+async def titles_list_open(message: Message, state: FSMContext) -> None:
+    if not await ensure_user_allowed(message, state):
+        return
+    await state.clear()
+    await send_results(message, message.from_user.id, "titles", "all", "all", 0)
 
 
 @dp.message(F.text == "⭐ Избранное")
