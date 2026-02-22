@@ -27,7 +27,8 @@ def normalize_url(url: str | None) -> str | None:
 class Storage:
     def __init__(self, path: Optional[str] = None) -> None:
         if path is None:
-            path = os.getenv("DB_PATH", "dancehall.db")
+            path = os.getenv("DB_PATH", "/app/data/dancehall.db")
+            print(f"[DB] Using DB_PATH={path}")
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self._init_db()
