@@ -72,7 +72,7 @@ def category_choice_kb(selected: list[str] | None = None) -> ReplyKeyboardMarkup
 
 def main_menu_kb(can_edit: bool) -> ReplyKeyboardMarkup:
     first_row = [KeyboardButton(text="🔎 Поиск")]
-    second_row = [KeyboardButton(text="⭐ Избранное"), KeyboardButton(text="📋 Список")]
+    second_row = [KeyboardButton(text="⭐Избранное"), KeyboardButton(text="📋 Список")]
     if can_edit:
         first_row.insert(0, KeyboardButton(text="➕ Видео"))
         second_row.insert(1, KeyboardButton(text="✏️ Правка"))
