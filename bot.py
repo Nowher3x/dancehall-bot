@@ -214,7 +214,7 @@ async def menu_btn(message: Message, state: FSMContext) -> None:
     await go_menu(message, state)
 
 
-@dp.message(F.text == "➕ Добавить видео")
+@dp.message(F.text == "➕ Видео")
 async def add_video_start(message: Message, state: FSMContext) -> None:
     if not await ensure_manage_access(message, state):
         return
