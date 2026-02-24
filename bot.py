@@ -158,7 +158,7 @@ async def ensure_user_allowed(message: Message, state: FSMContext | None = None)
     if role.value in {"banned", "expired", "unknown"}:
         if state:
             await state.clear()
-        await message.answer("Обратитесь к администратору")
+        await message.answer("Обратитесь к администратору @deeear_polly")
         return False
     return True
 
