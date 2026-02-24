@@ -467,17 +467,16 @@ class Storage:
             pages = ceil(total / PAGE_SIZE) if total else 0
             return rows, pages
 
-        all_rows = self.conn.execute(
-            """
-            SELECT DISTINCT v.* FROM videos v
-            JOIN video_categories vc ON vc.video_id = v.id
-            JOIN categories c ON c.id = vc.category_id
-            ORDER BY v.id DESC
-            """
-        ).fetchall()
-        filtered = [r for r in all_rows if q.casefold() in " ".join(self.video_categories(r["id"])).casefold()]
-        total = len(filtered)
-        rows = filtered[offset : offset + PAGE_SIZE]
+        base = """
+            SELECT DISTINCT v.*
+              FROM videos v
+              JOIN video_categories vc ON vc.video_id = v.id
+              JOIN categories c ON c.id = vc.category_id
+             WHERE lower(c.name) = lower(?)
+             ORDER BY v.id DESC
+        """
+        total = self.conn.execute(f"SELECT COUNT(*) AS cnt FROM ({base})", (q,)).fetchone()["cnt"]
+        rows = self.conn.execute(f"{base} LIMIT ? OFFSET ?", (q, PAGE_SIZE, offset)).fetchall()
         pages = ceil(total / PAGE_SIZE) if total else 0
         return rows, pages
 

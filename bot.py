@@ -75,6 +75,11 @@ def category_choice_kb(selected: list[str] | None = None) -> ReplyKeyboardMarkup
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def normalize_category_input(text: str) -> str:
+    cleaned = re.sub(r"^[✅▫️\s]+", "", text).strip()
+    return cleaned
+
+
 def main_menu_kb(can_edit: bool) -> ReplyKeyboardMarkup:
     if can_edit:
         rows = [
@@ -456,11 +461,8 @@ async def add_categories(message: Message, state: FSMContext) -> None:
         await message.answer(preview, reply_markup=kb)
         return
 
-    category = None
-    if text.startswith("✅ ") or text.startswith("▫️ "):
-        category = text[2:].strip()
-    elif text in CATEGORY_OPTIONS:
-        category = text
+    normalized = normalize_category_input(text)
+    category = normalized if normalized in CATEGORY_OPTIONS else None
 
     if category is not None:
         if category not in CATEGORY_OPTIONS:
@@ -644,8 +646,7 @@ async def search_query(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     query = (message.text or "").strip()
     if data["filter_type"] == "category":
-        if query.startswith("✅ ") or query.startswith("▫️ "):
-            query = query[2:].strip()
+        query = normalize_category_input(query)
         if query not in CATEGORY_OPTIONS:
             await message.answer("Выберите категорию кнопкой из списка.", reply_markup=search_category_kb())
             return
