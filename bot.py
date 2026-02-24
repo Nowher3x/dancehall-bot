@@ -12,6 +12,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
 from dotenv import load_dotenv
 
+from access_control import parse_admin_ids
+from admin_handlers import ADMIN_MENU_BTN, build_router
+from storage_users import UsersStorage
+from user_guards import DENIED_MEMBER_TEXT, resolve_role
+
 BACK = "⬅️ Назад"
 CANCEL = "❌ Отмена"
 MENU = "🏠 В меню"
@@ -76,6 +81,7 @@ def main_menu_kb(can_edit: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text="➕ Добавить видео"), KeyboardButton(text="🔎 Поиск")],
             [KeyboardButton(text="⭐ Избранное"), KeyboardButton(text="✏️ Редактировать")],
             [KeyboardButton(text="📋 Список"), KeyboardButton(text="🗑 Удалить")],
+            [KeyboardButton(text=ADMIN_MENU_BTN)],
         ]
     else:
         rows = [
@@ -138,28 +144,27 @@ def video_actions_kb(video_id: int, is_favorite: bool, can_edit: bool) -> Inline
 
 load_dotenv()
 STORAGE_CHAT_ID = int(os.getenv("STORAGE_CHAT_ID", "0"))
-ALLOWED_USER_IDS = {
-    int(v.strip())
-    for v in os.getenv("ALLOWED_USER_IDS", "").split(",")
-    if v.strip().isdigit()
-}
-if os.getenv("ALLOWED_USER_ID", "").strip().isdigit():
-    ALLOWED_USER_IDS.add(int(os.getenv("ALLOWED_USER_ID")))
+ADMIN_IDS = parse_admin_ids()
 
 storage = Storage()
+users_storage = UsersStorage()
 storage.ensure_taxonomy()
 dp = Dispatcher(storage=MemoryStorage())
+dp.include_router(build_router(main_menu_kb))
 
 
 async def ensure_user_allowed(message: Message, state: FSMContext | None = None) -> bool:
-    _ = (message, state)
+    role = resolve_role(message.from_user.id if message.from_user else None, ADMIN_IDS, users_storage)
+    if role.value in {"banned", "expired", "unknown"}:
+        if state:
+            await state.clear()
+        await message.answer(DENIED_MEMBER_TEXT)
+        return False
     return True
 
 
 def can_manage_content(user_id: int | None) -> bool:
-    if not ALLOWED_USER_IDS:
-        return True
-    return user_id in ALLOWED_USER_IDS if user_id is not None else False
+    return user_id in ADMIN_IDS if user_id is not None else False
 
 
 async def ensure_manage_access(message: Message, state: FSMContext | None = None) -> bool:
@@ -168,7 +173,7 @@ async def ensure_manage_access(message: Message, state: FSMContext | None = None
         return True
     if state:
         await state.clear()
-    await message.answer("⛔️ Только чтение: редактирование доступно только пользователям из ALLOWED_USER_ID(S).")
+    await message.answer("⛔️ Только чтение: редактирование доступно только ADMIN_IDS.")
     return False
 
 
@@ -214,7 +219,7 @@ async def menu_btn(message: Message, state: FSMContext) -> None:
     await go_menu(message, state)
 
 
-@dp.message(F.text == "➕ Видео")
+@dp.message(F.text.in_({"➕ Видео", "➕ Добавить видео"}))
 async def add_video_start(message: Message, state: FSMContext) -> None:
     if not await ensure_manage_access(message, state):
         return
@@ -809,7 +814,7 @@ async def main() -> None:
     if not token:
         raise RuntimeError("BOT_TOKEN is not set")
     bot = Bot(token)
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, admin_ids=ADMIN_IDS, users_storage=users_storage)
 
 
 if __name__ == "__main__":
