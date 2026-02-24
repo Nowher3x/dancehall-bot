@@ -71,14 +71,19 @@ def category_choice_kb(selected: list[str] | None = None) -> ReplyKeyboardMarkup
 
 
 def main_menu_kb(can_edit: bool) -> ReplyKeyboardMarkup:
-    first_row = [KeyboardButton(text="🔎 Поиск")]
-    second_row = [KeyboardButton(text="⭐Избранное"), KeyboardButton(text="📋 Список")]
     if can_edit:
-        first_row.insert(0, KeyboardButton(text="➕ Видео"))
-        second_row.insert(1, KeyboardButton(text="✏️ Правка"))
-        second_row.append(KeyboardButton(text="🗑 Удалить"))
+        rows = [
+            [KeyboardButton(text="➕ Добавить видео"), KeyboardButton(text="🔎 Поиск")],
+            [KeyboardButton(text="⭐ Избранное"), KeyboardButton(text="✏️ Редактировать")],
+            [KeyboardButton(text="📋 Список"), KeyboardButton(text="🗑 Удалить")],
+        ]
+    else:
+        rows = [
+            [KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="⭐ Избранное")],
+            [KeyboardButton(text="📋 Список")],
+        ]
     return ReplyKeyboardMarkup(
-        keyboard=[first_row, second_row],
+        keyboard=rows,
         resize_keyboard=True,
     )
 
