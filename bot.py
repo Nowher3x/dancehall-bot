@@ -70,13 +70,20 @@ def category_choice_kb(selected: list[str] | None = None) -> ReplyKeyboardMarkup
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-def main_menu_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
+def main_menu_kb(can_edit: bool) -> ReplyKeyboardMarkup:
+    if can_edit:
+        rows = [
             [KeyboardButton(text="➕ Добавить видео"), KeyboardButton(text="🔎 Поиск")],
             [KeyboardButton(text="⭐ Избранное"), KeyboardButton(text="✏️ Редактировать")],
             [KeyboardButton(text="📋 Список"), KeyboardButton(text="🗑 Удалить")],
-        ],
+        ]
+    else:
+        rows = [
+            [KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="⭐ Избранное")],
+            [KeyboardButton(text="📋 Список")],
+        ]
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
         resize_keyboard=True,
     )
 
@@ -113,16 +120,20 @@ def video_card_text(storage: Storage, row) -> str:
     return f"🔥 {row['title']}\nКатегории: {categories}"
 
 
-def video_actions_kb(video_id: int, is_favorite: bool) -> InlineKeyboardMarkup:
+def video_actions_kb(video_id: int, is_favorite: bool, can_edit: bool) -> InlineKeyboardMarkup:
     fav = "💔 Убрать из избранного" if is_favorite else "⭐ Добавить в избранное"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⬇️ Скачать", callback_data=f"video:download:{video_id}")],
-            [InlineKeyboardButton(text=fav, callback_data=f"video:fav:{video_id}")],
-            [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"video:edit:{video_id}")],
-            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"video:delete:{video_id}")],
-        ]
-    )
+    rows = [
+        [InlineKeyboardButton(text="▶️ Смотреть", callback_data=f"video:view:{video_id}")],
+        [InlineKeyboardButton(text=fav, callback_data=f"video:fav:{video_id}")],
+    ]
+    if can_edit:
+        rows.extend(
+            [
+                [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"video:edit:{video_id}")],
+                [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"video:delete:{video_id}")],
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 load_dotenv()
@@ -141,15 +152,35 @@ dp = Dispatcher(storage=MemoryStorage())
 
 
 async def ensure_user_allowed(message: Message, state: FSMContext | None = None) -> bool:
+    _ = (message, state)
+    return True
+
+
+def can_manage_content(user_id: int | None) -> bool:
     if not ALLOWED_USER_IDS:
         return True
+    return user_id in ALLOWED_USER_IDS if user_id is not None else False
+
+
+async def ensure_manage_access(message: Message, state: FSMContext | None = None) -> bool:
     user_id = message.from_user.id if message.from_user else None
-    if user_id in ALLOWED_USER_IDS:
+    if can_manage_content(user_id):
         return True
     if state:
         await state.clear()
-    await message.answer("⛔️ Доступ запрещён. Ваш user_id не добавлен в ALLOWED_USER_ID(S).")
-    logging.warning("Unauthorized access attempt from user_id=%s", user_id)
+    await message.answer("⛔️ Только чтение: редактирование доступно только пользователям из ALLOWED_USER_ID(S).")
+    return False
+
+
+
+
+async def ensure_manage_callback_access(callback: CallbackQuery, state: FSMContext | None = None) -> bool:
+    user_id = callback.from_user.id if callback.from_user else None
+    if can_manage_content(user_id):
+        return True
+    if state:
+        await state.clear()
+    await callback.answer("Только чтение", show_alert=True)
     return False
 
 
@@ -166,7 +197,7 @@ async def copy_video_to_vault(bot: Bot, from_chat_id: int, message_id: int) -> t
 
 async def go_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Главное меню", reply_markup=main_menu_kb())
+    await message.answer("Главное меню", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 @dp.message(CommandStart())
@@ -185,7 +216,7 @@ async def menu_btn(message: Message, state: FSMContext) -> None:
 
 @dp.message(F.text == "➕ Добавить видео")
 async def add_video_start(message: Message, state: FSMContext) -> None:
-    if not await ensure_user_allowed(message, state):
+    if not await ensure_manage_access(message, state):
         return
     await state.set_state(AddVideoStates.wait_video)
     await message.answer("Пришлите видеофайл Telegram или URL.", reply_markup=nav_kb())
@@ -199,7 +230,7 @@ async def add_video_back_from_video(message: Message, state: FSMContext) -> None
 @dp.message(AddVideoStates.wait_video, F.text == CANCEL)
 async def add_video_cancel_video(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Добавление отменено.", reply_markup=main_menu_kb())
+    await message.answer("Добавление отменено.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 @dp.message(AddVideoStates.wait_video)
@@ -263,7 +294,7 @@ async def add_video_title_back(message: Message, state: FSMContext) -> None:
 @dp.message(AddVideoStates.wait_title, F.text == CANCEL)
 async def add_video_title_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Добавление отменено.", reply_markup=main_menu_kb())
+    await message.answer("Добавление отменено.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 @dp.message(AddVideoStates.wait_title)
@@ -297,6 +328,8 @@ async def add_video_title(message: Message, state: FSMContext) -> None:
 
 @dp.callback_query(F.data.startswith("add:dup:"))
 async def add_duplicate_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await ensure_manage_callback_access(callback, state):
+        return
     choice = callback.data.split(":")[-1]
     if choice == "rename":
         await callback.message.answer("Введите новое название.")
@@ -321,7 +354,7 @@ async def add_categories_back(message: Message, state: FSMContext) -> None:
 @dp.message(AddVideoStates.wait_categories, F.text == CANCEL)
 async def add_categories_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Добавление отменено.", reply_markup=main_menu_kb())
+    await message.answer("Добавление отменено.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 @dp.message(AddVideoStates.wait_categories)
@@ -381,11 +414,13 @@ async def add_confirm_back(message: Message, state: FSMContext) -> None:
 @dp.message(AddVideoStates.confirm, F.text == CANCEL)
 async def add_confirm_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Добавление отменено.", reply_markup=main_menu_kb())
+    await message.answer("Добавление отменено.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 @dp.callback_query(F.data == "add:save")
 async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await ensure_manage_callback_access(callback, state):
+        return
     data = await state.get_data()
     duplicate_choice = data.get("duplicate_choice")
     duplicate_video_id = data.get("duplicate_video_id")
@@ -426,7 +461,7 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.clear()
     await send_video_card(callback.message, row, callback.from_user.id)
-    await callback.message.answer("Готово.", reply_markup=main_menu_kb())
+    await callback.message.answer("Готово.", reply_markup=main_menu_kb(can_manage_content(callback.from_user.id if callback.from_user else None)))
     await callback.answer()
 
 
@@ -454,7 +489,7 @@ async def search_filter_back(message: Message, state: FSMContext) -> None:
 @dp.message(SearchStates.choose_filter, F.text == CANCEL)
 async def search_filter_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Поиск отменен.", reply_markup=main_menu_kb())
+    await message.answer("Поиск отменен.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 @dp.message(SearchStates.choose_filter)
@@ -483,7 +518,7 @@ async def search_query_back(message: Message, state: FSMContext) -> None:
 @dp.message(SearchStates.wait_query, F.text == CANCEL)
 async def search_query_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Поиск отменен.", reply_markup=main_menu_kb())
+    await message.answer("Поиск отменен.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 async def send_results(message: Message, user_id: int, mode: str, filter_type: str, query: str, page: int) -> None:
@@ -532,7 +567,7 @@ async def search_query(message: Message, state: FSMContext) -> None:
         await message.answer("Выберите другую категорию или вернитесь в меню.", reply_markup=search_category_kb())
         return
     await state.clear()
-    await message.answer("Выберите видео или вернитесь в меню.", reply_markup=main_menu_kb())
+    await message.answer("Выберите видео или вернитесь в меню.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
 
 
 @dp.message(F.text == "📋 Список")
@@ -553,7 +588,7 @@ async def favorites_open(message: Message, state: FSMContext) -> None:
 
 @dp.message(F.text == "✏️ Редактировать")
 async def edit_open(message: Message, state: FSMContext) -> None:
-    if not await ensure_user_allowed(message, state):
+    if not await ensure_manage_access(message, state):
         return
     await state.set_state(EditStates.wait_video)
     await send_results(message, message.from_user.id, "all", "all", "all", 0)
@@ -562,7 +597,7 @@ async def edit_open(message: Message, state: FSMContext) -> None:
 
 @dp.message(F.text == "🗑 Удалить")
 async def delete_open(message: Message, state: FSMContext) -> None:
-    if not await ensure_user_allowed(message, state):
+    if not await ensure_manage_access(message, state):
         return
     await state.set_state(DeleteStates.wait_video)
     await send_results(message, message.from_user.id, "all", "all", "all", 0)
@@ -587,7 +622,7 @@ async def paginate(callback: CallbackQuery) -> None:
 async def send_video_card(target: Message, row, user_id: int) -> None:
     await target.answer(
         video_card_text(storage, row),
-        reply_markup=video_actions_kb(row["id"], storage.is_favorite(user_id, row["id"])),
+        reply_markup=video_actions_kb(row["id"], storage.is_favorite(user_id, row["id"]), can_manage_content(user_id)),
     )
 
 
@@ -615,12 +650,16 @@ async def video_fav(callback: CallbackQuery) -> None:
     row = storage.get_video(vid)
     if row:
         await callback.message.edit_reply_markup(
-            reply_markup=video_actions_kb(vid, storage.is_favorite(callback.from_user.id, vid))
+            reply_markup=video_actions_kb(
+                vid,
+                storage.is_favorite(callback.from_user.id, vid),
+                can_manage_content(callback.from_user.id if callback.from_user else None),
+            )
         )
 
 
-@dp.callback_query(F.data.startswith("video:download:"))
-async def video_download(callback: CallbackQuery) -> None:
+@dp.callback_query(F.data.startswith("video:view:"))
+async def video_view(callback: CallbackQuery) -> None:
     vid = int(callback.data.split(":")[-1])
     row = storage.get_video(vid)
     if not row:
@@ -648,6 +687,8 @@ async def video_download(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("video:edit:"))
 async def video_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await ensure_manage_callback_access(callback, state):
+        return
     vid = int(callback.data.split(":")[-1])
     row = storage.get_video(vid)
     if not row:
@@ -661,6 +702,8 @@ async def video_edit(callback: CallbackQuery, state: FSMContext) -> None:
 
 @dp.callback_query(F.data == "edit:title")
 async def edit_title_prompt(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await ensure_manage_callback_access(callback, state):
+        return
     await state.update_data(edit_field="title")
     await callback.message.answer("Введите новое название.", reply_markup=nav_kb())
     await callback.answer()
@@ -668,14 +711,16 @@ async def edit_title_prompt(callback: CallbackQuery, state: FSMContext) -> None:
 
 @dp.message(EditStates.wait_video)
 async def edit_message_router(message: Message, state: FSMContext) -> None:
+    if not await ensure_manage_access(message, state):
+        return
     data = await state.get_data()
     if message.text == CANCEL:
         await state.clear()
-        await message.answer("Редактирование отменено.", reply_markup=main_menu_kb())
+        await message.answer("Редактирование отменено.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
         return
     if message.text == BACK:
         await state.clear()
-        await message.answer("Назад в меню.", reply_markup=main_menu_kb())
+        await message.answer("Назад в меню.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
         return
     if data.get("edit_field") == "title":
         title = (message.text or "").strip()
@@ -683,12 +728,14 @@ async def edit_message_router(message: Message, state: FSMContext) -> None:
             await message.answer("Пустое название нельзя.")
             return
         storage.update_title(data["edit_video_id"], title)
-        await message.answer("Название обновлено.", reply_markup=main_menu_kb())
+        await message.answer("Название обновлено.", reply_markup=main_menu_kb(can_manage_content(message.from_user.id if message.from_user else None)))
         await state.clear()
 
 
 @dp.callback_query(F.data == "edit:delete")
 async def edit_delete(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await ensure_manage_callback_access(callback, state):
+        return
     data = await state.get_data()
     vid = data.get("edit_video_id")
     if not vid:
@@ -707,6 +754,9 @@ async def edit_delete(callback: CallbackQuery, state: FSMContext) -> None:
 
 @dp.callback_query(F.data.startswith("video:delete:"))
 async def delete_preview(callback: CallbackQuery) -> None:
+    if not can_manage_content(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Только чтение", show_alert=True)
+        return
     vid = int(callback.data.split(":")[-1])
     row = storage.get_video(vid)
     if not row:
@@ -724,17 +774,19 @@ async def delete_preview(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("del:confirm:"))
 async def delete_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await ensure_manage_callback_access(callback, state):
+        return
     vid = int(callback.data.split(":")[-1])
     storage.delete_video(vid)
     await state.clear()
-    await callback.message.answer("Видео удалено.", reply_markup=main_menu_kb())
+    await callback.message.answer("Видео удалено.", reply_markup=main_menu_kb(can_manage_content(callback.from_user.id if callback.from_user else None)))
     await callback.answer()
 
 
 @dp.callback_query(F.data == "del:cancel")
 async def delete_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.answer("Удаление отменено.", reply_markup=main_menu_kb())
+    await callback.message.answer("Удаление отменено.", reply_markup=main_menu_kb(can_manage_content(callback.from_user.id if callback.from_user else None)))
     await callback.answer()
 
 
