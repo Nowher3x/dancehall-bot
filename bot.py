@@ -313,15 +313,6 @@ async def add_video_video(message: Message, state: FSMContext) -> None:
             except Exception as exc:
                 logging.exception("Failed to copy source video to vault chat: %s", exc)
                 await message.answer("⚠️ Не удалось скопировать видео в vault-канал. Проверьте права бота в канале.")
-
-        existing = storage.find_video_by_file_uid(file_unique_id)
-        if existing:
-            if vault_chat_id and vault_message_id:
-                storage.save_vault_message(existing["id"], vault_chat_id, vault_message_id)
-            await message.answer("Такое видео уже есть, запись обновлена в vault.")
-            await send_video_card(message, existing, message.from_user.id)
-            await go_menu(message, state)
-            return
     elif message.text and re.match(r"https?://", message.text.strip()):
         source_url = message.text.strip()
         existing = storage.find_video_by_url(normalize_url(source_url))
@@ -498,7 +489,18 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
         row = storage.get_video(duplicate_video_id)
         await callback.message.answer("Видео заменено.")
     else:
-        if data.get("file_unique_id"):
+        if data.get("vault_chat_id") and data.get("vault_message_id"):
+            vid = storage.upsert_video_by_vault(
+                data["title"],
+                data.get("file_id"),
+                data.get("file_unique_id"),
+                data.get("source_url"),
+                data["vault_chat_id"],
+                data["vault_message_id"],
+            )
+            storage._set_categories(vid, data["categories"])
+            storage.conn.commit()
+        elif data.get("file_unique_id"):
             vid = storage.upsert_video_file(
                 data["title"],
                 data.get("file_id"),
@@ -518,7 +520,7 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
         row = storage.get_video(vid)
         await callback.message.answer("Видео сохранено.")
 
-    if data.get("vault_chat_id") and data.get("vault_message_id"):
+    if duplicate_choice == "replace" and duplicate_video_id and data.get("vault_chat_id") and data.get("vault_message_id"):
         storage.save_vault_message(row["id"], data["vault_chat_id"], data["vault_message_id"])
 
     await state.clear()
