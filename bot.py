@@ -74,8 +74,8 @@ def main_menu_kb(can_edit: bool) -> ReplyKeyboardMarkup:
     first_row = [KeyboardButton(text="🔎 Поиск")]
     second_row = [KeyboardButton(text="⭐ Избранное"), KeyboardButton(text="📋 Список")]
     if can_edit:
-        first_row.insert(0, KeyboardButton(text="➕ Добавить видео"))
-        second_row.insert(1, KeyboardButton(text="✏️ Редактировать"))
+        first_row.insert(0, KeyboardButton(text="➕ Видео"))
+        second_row.insert(1, KeyboardButton(text="✏️ Правка"))
         second_row.append(KeyboardButton(text="🗑 Удалить"))
     return ReplyKeyboardMarkup(
         keyboard=[first_row, second_row],
@@ -209,7 +209,7 @@ async def menu_btn(message: Message, state: FSMContext) -> None:
     await go_menu(message, state)
 
 
-@dp.message(F.text == "➕ Добавить видео")
+@dp.message(F.text == "➕ Видео")
 async def add_video_start(message: Message, state: FSMContext) -> None:
     if not await ensure_manage_access(message, state):
         return
