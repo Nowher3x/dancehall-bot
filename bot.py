@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from access_control import parse_admin_ids
 from admin_handlers import ADMIN_MENU_BTN, build_router
 from storage_users import UsersStorage
-from user_guards import resolve_role
+from user_guards import DENIED_MEMBER_TEXT, resolve_role
 
 BACK = "⬅️ Назад"
 CANCEL = "❌ Отмена"
@@ -158,7 +158,7 @@ async def ensure_user_allowed(message: Message, state: FSMContext | None = None)
     if role.value in {"banned", "expired", "unknown"}:
         if state:
             await state.clear()
-        await message.answer("Обратитесь к администратору @deeear_polly")
+        await message.answer(DENIED_MEMBER_TEXT)
         return False
     return True
 

@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from access_control import UserRole, now_ts
 from storage_users import UsersStorage
 
-DENIED_MEMBER_TEXT = "Обратитесь к администратору"
+DENIED_MEMBER_TEXT = "Обратитесь к администратору @deeear_polly"
 
 
 def resolve_role(user_id: int | None, admin_ids: set[int], users_storage: UsersStorage) -> UserRole:
