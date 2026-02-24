@@ -83,6 +83,10 @@ class Storage:
             self.conn.execute("ALTER TABLE videos ADD COLUMN storage_message_id INTEGER")
         if "needs_refresh" not in columns:
             self.conn.execute("ALTER TABLE videos ADD COLUMN needs_refresh INTEGER NOT NULL DEFAULT 0")
+        if "vault_chat_id" not in columns:
+            self.conn.execute("ALTER TABLE videos ADD COLUMN vault_chat_id INTEGER")
+        if "vault_message_id" not in columns:
+            self.conn.execute("ALTER TABLE videos ADD COLUMN vault_message_id INTEGER")
         self.conn.commit()
 
     def ensure_taxonomy(self) -> None:
@@ -97,6 +101,12 @@ class Storage:
     def find_video_by_storage_message(self, storage_message_id: int):
         return self.conn.execute(
             "SELECT * FROM videos WHERE storage_message_id = ?", (storage_message_id,)
+        ).fetchone()
+
+
+    def find_video_by_vault_message(self, vault_message_id: int):
+        return self.conn.execute(
+            "SELECT * FROM videos WHERE vault_message_id = ?", (vault_message_id,)
         ).fetchone()
 
     def find_video_by_url(self, normalized_url: str):
@@ -163,6 +173,17 @@ class Storage:
              WHERE id = ?
             """,
             (storage_chat_id, storage_message_id, video_id),
+        )
+        self.conn.commit()
+
+    def save_vault_message(self, video_id: int, vault_chat_id: int, vault_message_id: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE videos
+               SET vault_chat_id = ?, vault_message_id = ?, storage_chat_id = ?, storage_message_id = ?
+             WHERE id = ?
+            """,
+            (vault_chat_id, vault_message_id, vault_chat_id, vault_message_id, video_id),
         )
         self.conn.commit()
 
