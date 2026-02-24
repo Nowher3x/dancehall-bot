@@ -36,18 +36,10 @@ class Storage:
 
     def _init_db(self) -> None:
         cur = self.conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+        self.ensure_videos_schema()
         cur.executescript(
             """
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS videos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                file_id TEXT,
-                file_unique_id TEXT UNIQUE,
-                source_url TEXT,
-                source_url_normalized TEXT UNIQUE,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE
@@ -70,20 +62,148 @@ class Storage:
             """
         )
         self.conn.commit()
-        self._run_migrations()
 
-    def _run_migrations(self) -> None:
-        columns = {
-            row["name"]
-            for row in self.conn.execute("PRAGMA table_info(videos)").fetchall()
-        }
-        if "storage_chat_id" not in columns:
-            self.conn.execute("ALTER TABLE videos ADD COLUMN storage_chat_id INTEGER")
-        if "storage_message_id" not in columns:
-            self.conn.execute("ALTER TABLE videos ADD COLUMN storage_message_id INTEGER")
-        if "needs_refresh" not in columns:
-            self.conn.execute("ALTER TABLE videos ADD COLUMN needs_refresh INTEGER NOT NULL DEFAULT 0")
-        self.conn.commit()
+    def ensure_videos_schema(self) -> None:
+        self._ensure_db_health()
+        if not self._videos_table_exists():
+            print("[DB] videos table not found, creating fresh schema")
+            self._create_videos_table()
+            self.conn.commit()
+            return
+
+        indexes = self._get_video_indexes()
+        columns = self._get_video_columns()
+        has_vault_cols = {"vault_chat_id", "vault_message_id"}.issubset(columns)
+        has_unique_file_unique_id = any(
+            idx["unique"] and "file_unique_id" in idx["columns"] for idx in indexes
+        )
+        has_unique_vault_pair = any(
+            idx["unique"]
+            and "vault_chat_id" in idx["columns"]
+            and "vault_message_id" in idx["columns"]
+            for idx in indexes
+        )
+
+        print(
+            f"[DB] videos schema check: columns={sorted(columns)} indexes={indexes}"
+        )
+        needs_migration = not (has_unique_vault_pair and not has_unique_file_unique_id and has_vault_cols)
+        print(
+            "[DB] videos migration required="
+            f"{needs_migration} (has_vault_cols={has_vault_cols}, "
+            f"has_unique_file_unique_id={has_unique_file_unique_id}, "
+            f"has_unique_vault_pair={has_unique_vault_pair})"
+        )
+        if not needs_migration:
+            return
+
+        self._rebuild_videos_table()
+
+    def _ensure_db_health(self) -> None:
+        self.conn.execute("SELECT 1").fetchone()
+        integrity = self.conn.execute("PRAGMA integrity_check").fetchone()
+        result = (integrity[0] if integrity else "").lower()
+        if result != "ok":
+            print(f"[DB] integrity_check failed: {result}")
+            raise RuntimeError("SQLite integrity check failed; aborting schema migration")
+
+    def _videos_table_exists(self) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'videos'"
+        ).fetchone()
+        return row is not None
+
+    def _get_video_columns(self) -> set[str]:
+        return {row["name"] for row in self.conn.execute("PRAGMA table_info(videos)").fetchall()}
+
+    def _get_video_indexes(self) -> list[dict]:
+        data = []
+        for idx in self.conn.execute("PRAGMA index_list(videos)").fetchall():
+            cols = [
+                r["name"]
+                for r in self.conn.execute(f"PRAGMA index_info('{idx['name']}')").fetchall()
+            ]
+            data.append({"name": idx["name"], "unique": bool(idx["unique"]), "columns": cols})
+        return data
+
+    def _create_videos_table(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                file_id TEXT,
+                file_unique_id TEXT,
+                source_url TEXT,
+                source_url_normalized TEXT UNIQUE,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                storage_chat_id INTEGER,
+                storage_message_id INTEGER,
+                needs_refresh INTEGER NOT NULL DEFAULT 0,
+                vault_chat_id INTEGER,
+                vault_message_id INTEGER
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_videos_vault_pair
+              ON videos(vault_chat_id, vault_message_id);
+            CREATE INDEX IF NOT EXISTS ix_videos_created_at ON videos(created_at);
+            CREATE INDEX IF NOT EXISTS ix_videos_vault_chat_id ON videos(vault_chat_id);
+            """
+        )
+
+    def _rebuild_videos_table(self) -> None:
+        rows_before = self.conn.execute("SELECT COUNT(*) AS cnt FROM videos").fetchone()["cnt"]
+        print(f"[DB] rebuilding videos table, rows_before={rows_before}")
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute("ALTER TABLE videos RENAME TO videos_old")
+            self._create_videos_table()
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO videos(
+                    id, title, file_id, file_unique_id, source_url, source_url_normalized,
+                    created_at, storage_chat_id, storage_message_id, needs_refresh,
+                    vault_chat_id, vault_message_id
+                )
+                SELECT
+                    id, title, file_id, file_unique_id, source_url, source_url_normalized,
+                    created_at, storage_chat_id, storage_message_id,
+                    COALESCE(needs_refresh, 0),
+                    COALESCE(vault_chat_id, storage_chat_id),
+                    COALESCE(vault_message_id, storage_message_id)
+                FROM videos_old
+                """
+            )
+            inserted_rows = self.conn.execute("SELECT COUNT(*) AS cnt FROM videos").fetchone()["cnt"]
+            skipped_rows = rows_before - inserted_rows
+            self.conn.execute("DROP TABLE videos_old")
+            self.conn.execute("COMMIT")
+            print(
+                "[DB] videos rebuild complete: "
+                f"inserted_rows={inserted_rows}, skipped_rows={skipped_rows}"
+            )
+        except Exception as exc:
+            self.conn.execute("ROLLBACK")
+            print(f"[DB] videos rebuild failed, rolled back: {exc}")
+            raise
+
+        final_indexes = self._get_video_indexes()
+        has_unique_file_unique_id = any(
+            idx["unique"] and "file_unique_id" in idx["columns"] for idx in final_indexes
+        )
+        has_unique_vault_pair = any(
+            idx["unique"]
+            and "vault_chat_id" in idx["columns"]
+            and "vault_message_id" in idx["columns"]
+            for idx in final_indexes
+        )
+        rows_after = self.conn.execute("SELECT COUNT(*) AS cnt FROM videos").fetchone()["cnt"]
+        print(
+            f"[DB] videos post-check: rows_after={rows_after}, indexes={final_indexes}, "
+            f"has_unique_vault_pair={has_unique_vault_pair}, "
+            f"has_unique_file_unique_id={has_unique_file_unique_id}"
+        )
+        if not has_unique_vault_pair or has_unique_file_unique_id:
+            raise RuntimeError("videos schema post-check failed")
 
     def ensure_taxonomy(self) -> None:
         for name in CATEGORY_OPTIONS:
@@ -92,11 +212,20 @@ class Storage:
         self.conn.commit()
 
     def find_video_by_file_uid(self, uid: str):
-        return self.conn.execute("SELECT * FROM videos WHERE file_unique_id = ?", (uid,)).fetchone()
+        return self.conn.execute(
+            "SELECT * FROM videos WHERE file_unique_id = ? ORDER BY id DESC LIMIT 1",
+            (uid,),
+        ).fetchone()
 
     def find_video_by_storage_message(self, storage_message_id: int):
         return self.conn.execute(
             "SELECT * FROM videos WHERE storage_message_id = ?", (storage_message_id,)
+        ).fetchone()
+
+
+    def find_video_by_vault_message(self, vault_message_id: int):
+        return self.conn.execute(
+            "SELECT * FROM videos WHERE vault_message_id = ?", (vault_message_id,)
         ).fetchone()
 
     def find_video_by_url(self, normalized_url: str):
@@ -142,18 +271,51 @@ class Storage:
             """
             INSERT INTO videos(title, file_id, file_unique_id, source_url, source_url_normalized, needs_refresh)
             VALUES (?, ?, ?, ?, ?, 0)
-            ON CONFLICT(file_unique_id) DO UPDATE SET
-                title = excluded.title,
-                file_id = excluded.file_id,
-                source_url = excluded.source_url,
-                source_url_normalized = excluded.source_url_normalized,
-                needs_refresh = 0
             """,
             (title.strip(), file_id, file_unique_id, source_url, normalized_url),
         )
-        row = self.find_video_by_file_uid(file_unique_id)
+        row_id = cur.lastrowid
         self.conn.commit()
-        return row["id"]
+        return row_id
+
+    def upsert_video_by_vault(self, title, file_id, file_unique_id, source_url, vault_chat_id, vault_message_id):
+        normalized_url = normalize_url(source_url) if source_url else None
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO videos(
+                title, file_id, file_unique_id, source_url, source_url_normalized,
+                needs_refresh, vault_chat_id, vault_message_id, storage_chat_id, storage_message_id
+            )
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            ON CONFLICT(vault_chat_id, vault_message_id) DO UPDATE SET
+                title = excluded.title,
+                file_id = excluded.file_id,
+                file_unique_id = excluded.file_unique_id,
+                source_url = excluded.source_url,
+                source_url_normalized = excluded.source_url_normalized,
+                needs_refresh = 0,
+                storage_chat_id = excluded.storage_chat_id,
+                storage_message_id = excluded.storage_message_id
+            """,
+            (
+                title.strip(),
+                file_id,
+                file_unique_id,
+                source_url,
+                normalized_url,
+                vault_chat_id,
+                vault_message_id,
+                vault_chat_id,
+                vault_message_id,
+            ),
+        )
+        row = self.conn.execute(
+            "SELECT id FROM videos WHERE vault_chat_id = ? AND vault_message_id = ?",
+            (vault_chat_id, vault_message_id),
+        ).fetchone()
+        self.conn.commit()
+        return int(row["id"])
 
     def save_storage_message(self, video_id: int, storage_chat_id: int, storage_message_id: int) -> None:
         self.conn.execute(
@@ -163,6 +325,17 @@ class Storage:
              WHERE id = ?
             """,
             (storage_chat_id, storage_message_id, video_id),
+        )
+        self.conn.commit()
+
+    def save_vault_message(self, video_id: int, vault_chat_id: int, vault_message_id: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE videos
+               SET vault_chat_id = ?, vault_message_id = ?, storage_chat_id = ?, storage_message_id = ?
+             WHERE id = ?
+            """,
+            (vault_chat_id, vault_message_id, vault_chat_id, vault_message_id, video_id),
         )
         self.conn.commit()
 

@@ -4,7 +4,7 @@ import os
 import re
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -143,7 +143,7 @@ def video_actions_kb(video_id: int, is_favorite: bool, can_edit: bool) -> Inline
 
 
 load_dotenv()
-STORAGE_CHAT_ID = int(os.getenv("STORAGE_CHAT_ID", "0"))
+VAULT_CHAT_ID = int(os.getenv("VAULT_CHAT_ID") or os.getenv("STORAGE_CHAT_ID") or "0")
 ADMIN_IDS = parse_admin_ids()
 
 storage = Storage()
@@ -190,14 +190,71 @@ async def ensure_manage_callback_access(callback: CallbackQuery, state: FSMConte
 
 
 async def copy_video_to_vault(bot: Bot, from_chat_id: int, message_id: int) -> tuple[int, int] | None:
-    if not STORAGE_CHAT_ID:
+    if not VAULT_CHAT_ID:
         return None
     copied = await bot.copy_message(
-        chat_id=STORAGE_CHAT_ID,
+        chat_id=VAULT_CHAT_ID,
         from_chat_id=from_chat_id,
         message_id=message_id,
     )
-    return STORAGE_CHAT_ID, copied.message_id
+    return VAULT_CHAT_ID, copied.message_id
+
+
+async def deliver_video(bot: Bot, user_chat_id: int, row) -> bool:
+    vault_message_id = row["vault_message_id"] or row["storage_message_id"]
+    record_vault_chat_id = row["vault_chat_id"] or row["storage_chat_id"]
+    from_chat_id = VAULT_CHAT_ID or record_vault_chat_id
+
+    if not vault_message_id or not from_chat_id:
+        logging.warning(
+            "Video delivery denied: missing vault metadata for video_id=%s (vault_message_id=%s, vault_chat_id=%s)",
+            row["id"],
+            vault_message_id,
+            from_chat_id,
+        )
+        await bot.send_message(
+            user_chat_id,
+            "Видео недоступно, обратитесь к администратору. Возможно, нужно переимпортировать видео.",
+        )
+        return False
+
+    try:
+        await bot.copy_message(
+            chat_id=user_chat_id,
+            from_chat_id=from_chat_id,
+            message_id=vault_message_id,
+        )
+        return True
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        logging.warning(
+            "copy_message failed for video_id=%s from_chat_id=%s message_id=%s: %s",
+            row["id"],
+            from_chat_id,
+            vault_message_id,
+            exc,
+        )
+
+    try:
+        await bot.forward_message(
+            chat_id=user_chat_id,
+            from_chat_id=from_chat_id,
+            message_id=vault_message_id,
+        )
+        return True
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        logging.warning(
+            "forward_message fallback failed for video_id=%s from_chat_id=%s message_id=%s: %s",
+            row["id"],
+            from_chat_id,
+            vault_message_id,
+            exc,
+        )
+
+    await bot.send_message(
+        user_chat_id,
+        "Видео недоступно, обратитесь к администратору. Возможно, нужно переимпортировать видео.",
+    )
+    return False
 
 
 async def go_menu(message: Message, state: FSMContext) -> None:
@@ -243,28 +300,19 @@ async def add_video_video(message: Message, state: FSMContext) -> None:
     if not await ensure_user_allowed(message, state):
         return
     file_id = file_unique_id = source_url = None
-    storage_chat_id = storage_message_id = None
+    vault_chat_id = vault_message_id = None
     if message.video:
         file_id = message.video.file_id
         file_unique_id = message.video.file_unique_id
 
-        if STORAGE_CHAT_ID:
+        if VAULT_CHAT_ID:
             try:
                 copied_meta = await copy_video_to_vault(message.bot, message.chat.id, message.message_id)
                 if copied_meta:
-                    storage_chat_id, storage_message_id = copied_meta
+                    vault_chat_id, vault_message_id = copied_meta
             except Exception as exc:
-                logging.exception("Failed to copy source video to storage chat: %s", exc)
+                logging.exception("Failed to copy source video to vault chat: %s", exc)
                 await message.answer("⚠️ Не удалось скопировать видео в vault-канал. Проверьте права бота в канале.")
-
-        existing = storage.find_video_by_file_uid(file_unique_id)
-        if existing:
-            if storage_chat_id and storage_message_id:
-                storage.save_storage_message(existing["id"], storage_chat_id, storage_message_id)
-            await message.answer("Такое видео уже есть, запись обновлена в vault.")
-            await send_video_card(message, existing, message.from_user.id)
-            await go_menu(message, state)
-            return
     elif message.text and re.match(r"https?://", message.text.strip()):
         source_url = message.text.strip()
         existing = storage.find_video_by_url(normalize_url(source_url))
@@ -283,8 +331,8 @@ async def add_video_video(message: Message, state: FSMContext) -> None:
         source_url=source_url,
         source_chat_id=message.chat.id,
         source_message_id=message.message_id,
-        storage_chat_id=storage_chat_id,
-        storage_message_id=storage_message_id,
+        vault_chat_id=vault_chat_id,
+        vault_message_id=vault_message_id,
     )
     await state.set_state(AddVideoStates.wait_title)
     await message.answer("Введите название видео.", reply_markup=nav_kb())
@@ -441,7 +489,18 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
         row = storage.get_video(duplicate_video_id)
         await callback.message.answer("Видео заменено.")
     else:
-        if data.get("file_unique_id"):
+        if data.get("vault_chat_id") and data.get("vault_message_id"):
+            vid = storage.upsert_video_by_vault(
+                data["title"],
+                data.get("file_id"),
+                data.get("file_unique_id"),
+                data.get("source_url"),
+                data["vault_chat_id"],
+                data["vault_message_id"],
+            )
+            storage._set_categories(vid, data["categories"])
+            storage.conn.commit()
+        elif data.get("file_unique_id"):
             vid = storage.upsert_video_file(
                 data["title"],
                 data.get("file_id"),
@@ -461,8 +520,8 @@ async def add_save(callback: CallbackQuery, state: FSMContext) -> None:
         row = storage.get_video(vid)
         await callback.message.answer("Видео сохранено.")
 
-    if data.get("file_unique_id") and data.get("storage_chat_id") and data.get("storage_message_id"):
-        storage.save_storage_message(row["id"], data["storage_chat_id"], data["storage_message_id"])
+    if duplicate_choice == "replace" and duplicate_video_id and data.get("vault_chat_id") and data.get("vault_message_id"):
+        storage.save_vault_message(row["id"], data["vault_chat_id"], data["vault_message_id"])
 
     await state.clear()
     await send_video_card(callback.message, row, callback.from_user.id)
@@ -670,23 +729,7 @@ async def video_view(callback: CallbackQuery) -> None:
     if not row:
         await callback.answer("Видео не найдено", show_alert=True)
         return
-    if row["file_id"]:
-        try:
-            await callback.message.answer_video(row["file_id"], caption=row["title"])
-        except TelegramBadRequest as exc:
-            text = str(exc).lower()
-            if "wrong file identifier" in text or "file_id" in text or "invalid" in text:
-                storage.mark_needs_refresh(vid)
-                logging.warning("Invalid file_id for video_id=%s: %s", vid, exc)
-                await callback.message.answer(
-                    "⚠️ Видео временно недоступно: Telegram обновил file_id. Нужна переиндексация из vault-канала."
-                )
-            else:
-                raise
-    elif row["source_url"]:
-        await callback.message.answer(f"Ссылка: {row['source_url']}")
-    else:
-        await callback.message.answer("Источник не найден.")
+    await deliver_video(callback.bot, callback.from_user.id, row)
     await callback.answer()
 
 
@@ -797,15 +840,18 @@ async def delete_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 
 @dp.channel_post(F.video)
 async def vault_channel_post(message: Message) -> None:
-    if not STORAGE_CHAT_ID or message.chat.id != STORAGE_CHAT_ID or not message.video:
+    if not VAULT_CHAT_ID or message.chat.id != VAULT_CHAT_ID or not message.video:
         return
+    row = storage.find_video_by_vault_message(message.message_id) or storage.find_video_by_storage_message(message.message_id)
+    if row:
+        storage.save_vault_message(row["id"], message.chat.id, message.message_id)
     updated = storage.refresh_file_id_from_storage(
         message.message_id,
         message.video.file_id,
         message.video.file_unique_id,
     )
     if updated:
-        logging.info("Storage refresh applied for storage_message_id=%s", message.message_id)
+        logging.info("Vault refresh applied for message_id=%s", message.message_id)
 
 
 async def main() -> None:
