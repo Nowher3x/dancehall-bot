@@ -212,8 +212,19 @@ class Storage:
 
     def _rebuild_videos_table(self) -> None:
         rows_before = self.conn.execute("SELECT COUNT(*) AS cnt FROM videos").fetchone()["cnt"]
+        source_columns = self._get_video_columns()
+        vault_chat_expr = "COALESCE(vault_chat_id, storage_chat_id)" if "vault_chat_id" in source_columns else "storage_chat_id"
+        vault_message_expr = (
+            "COALESCE(vault_message_id, storage_message_id)"
+            if "vault_message_id" in source_columns
+            else "storage_message_id"
+        )
         print(f"[DB] rebuilding videos table, rows_before={rows_before}")
+        fk_row = self.conn.execute("PRAGMA foreign_keys").fetchone()
+        fk_enabled = bool(fk_row[0]) if fk_row else True
         try:
+            if fk_enabled:
+                self.conn.execute("PRAGMA foreign_keys = OFF")
             self.conn.execute("BEGIN IMMEDIATE")
             self.conn.execute("ALTER TABLE videos RENAME TO videos_old")
             self._create_videos_table()
@@ -228,10 +239,13 @@ class Storage:
                     id, title, file_id, file_unique_id, source_url, source_url_normalized,
                     created_at, storage_chat_id, storage_message_id,
                     COALESCE(needs_refresh, 0),
-                    COALESCE(vault_chat_id, storage_chat_id),
-                    COALESCE(vault_message_id, storage_message_id)
+                    {vault_chat_expr},
+                    {vault_message_expr}
                 FROM videos_old
-                """
+                """.format(
+                    vault_chat_expr=vault_chat_expr,
+                    vault_message_expr=vault_message_expr,
+                )
             )
             inserted_rows = self.conn.execute("SELECT COUNT(*) AS cnt FROM videos").fetchone()["cnt"]
             skipped_rows = rows_before - inserted_rows
@@ -242,9 +256,15 @@ class Storage:
                 f"inserted_rows={inserted_rows}, skipped_rows={skipped_rows}"
             )
         except Exception as exc:
-            self.conn.execute("ROLLBACK")
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
             print(f"[DB] videos rebuild failed, rolled back: {exc}")
             raise
+        finally:
+            if fk_enabled:
+                self.conn.execute("PRAGMA foreign_keys = ON")
 
         final_indexes = self._get_video_indexes()
         has_unique_file_unique_id = any(
