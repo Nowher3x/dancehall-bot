@@ -55,6 +55,15 @@ class UsersStorage:
     def get_user(self, telegram_id: int):
         return self.conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
 
+    def get_user_by_username(self, username: str):
+        normalized = username.strip().lstrip("@").lower()
+        if not normalized:
+            return None
+        return self.conn.execute(
+            "SELECT * FROM users WHERE LOWER(username) = ?",
+            (normalized,),
+        ).fetchone()
+
     def upsert_user(
         self,
         telegram_id: int,

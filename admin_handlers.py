@@ -56,6 +56,9 @@ def _fmt_exp(value: int | None) -> str:
 
 
 def _target_from_message(message: Message):
+    reply_user = message.reply_to_message.from_user if message.reply_to_message else None
+    if reply_user:
+        return reply_user.id, reply_user.username, reply_user.full_name
     if message.forward_from:
         user = message.forward_from
         return user.id, user.username, user.full_name
@@ -63,9 +66,22 @@ def _target_from_message(message: Message):
     sender = getattr(origin, "sender_user", None)
     if sender:
         return sender.id, sender.username, sender.full_name
-    text = (message.text or "").strip()
+
+    original_text = message.text or ""
+    text = original_text.strip()
+    entities = message.entities or []
+    for entity in entities:
+        value = original_text[entity.offset : entity.offset + entity.length]
+        if entity.type == "text_mention" and entity.user:
+            user = entity.user
+            return user.id, user.username, user.full_name
+        if entity.type == "mention" and value.startswith("@"):
+            return value, None, None
+
     if text.isdigit():
         return int(text), None, None
+    if text.startswith("@"):
+        return text, None, None
     return None
 
 
@@ -76,18 +92,22 @@ def _card(data: dict) -> str:
 def build_router(main_menu_builder):
     router = Router(name="admin_users")
 
-    async def resolve_target(message: Message):
+    async def resolve_target(message: Message, users_storage: UsersStorage):
         parsed = _target_from_message(message)
-        if parsed:
-            return parsed
-        text = (message.text or "").strip()
-        if text.startswith("@"):
-            try:
-                chat = await message.bot.get_chat(text)
-            except TelegramBadRequest:
-                return None
-            return chat.id, chat.username, chat.full_name
-        return None
+        if not parsed:
+            return None
+
+        target = parsed[0]
+        if isinstance(target, str) and target.startswith("@"):
+            by_username = users_storage.get_user_by_username(target)
+            if by_username:
+                return by_username["telegram_id"], by_username["username"], by_username["full_name"]
+
+        try:
+            chat = await message.bot.get_chat(target)
+        except TelegramBadRequest:
+            return None
+        return chat.id, chat.username, chat.full_name
 
     @router.message(F.text == ADMIN_MENU_BTN)
     async def open_admin_menu(message: Message, state: FSMContext, admin_ids: set[int], **kwargs):
@@ -107,7 +127,7 @@ def build_router(main_menu_builder):
 
     @router.message(AdminUserStates.add_target)
     async def add_user_target(message: Message, state: FSMContext, users_storage: UsersStorage, **kwargs):
-        resolved = await resolve_target(message)
+        resolved = await resolve_target(message, users_storage)
         if not resolved:
             await message.answer("Не удалось определить пользователя. Перешлите сообщение пользователя.")
             return
@@ -148,8 +168,8 @@ def build_router(main_menu_builder):
         await state.clear()
         await message.answer(f"Доступ активен до {_fmt_exp(expires_at)}", reply_markup=main_menu_builder(True))
 
-    async def select_target(message: Message, state: FSMContext, next_state: State):
-        resolved = await resolve_target(message)
+    async def select_target(message: Message, state: FSMContext, users_storage: UsersStorage, next_state: State):
+        resolved = await resolve_target(message, users_storage)
         if not resolved:
             await message.answer("Не удалось определить пользователя. Перешлите сообщение пользователя.")
             return None
@@ -168,7 +188,7 @@ def build_router(main_menu_builder):
 
     @router.message(AdminUserStates.edit_target)
     async def edit_target(message: Message, state: FSMContext, users_storage: UsersStorage, **kwargs):
-        user_id = await select_target(message, state, AdminUserStates.edit_days)
+        user_id = await select_target(message, state, users_storage, AdminUserStates.edit_days)
         if not user_id:
             return
         row = users_storage.get_user(user_id)
@@ -245,7 +265,7 @@ def build_router(main_menu_builder):
 
     @router.message(AdminUserStates.ban_target)
     async def ban_toggle(message: Message, state: FSMContext, users_storage: UsersStorage, admin_ids: set[int], **kwargs):
-        resolved = await resolve_target(message)
+        resolved = await resolve_target(message, users_storage)
         if not resolved:
             await message.answer("Не удалось определить пользователя")
             return
@@ -273,7 +293,7 @@ def build_router(main_menu_builder):
 
     @router.message(AdminUserStates.delete_target)
     async def delete_user(message: Message, state: FSMContext, users_storage: UsersStorage, admin_ids: set[int], **kwargs):
-        resolved = await resolve_target(message)
+        resolved = await resolve_target(message, users_storage)
         if not resolved:
             await message.answer("Не удалось определить пользователя")
             return
