@@ -30,8 +30,11 @@ DB_PATH=/app/data/dancehall.db
 ADMIN_ID=123456789
 # ADMIN_IDS=123456789,987654321
 
-# ID склад-канала (опционально)
-STORAGE_CHAT_ID=-1001234567890
+# ID vault-канала с защищённым контентом (рекомендуется)
+VAULT_CHAT_ID=-1001234567890
+
+# Legacy fallback (если VAULT_CHAT_ID не задан)
+# STORAGE_CHAT_ID=-1001234567890
 ```
 
 > `ALLOWED_USER_ID` / `ALLOWED_USER_IDS` больше не используются для доступа.
